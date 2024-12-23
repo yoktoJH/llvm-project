@@ -327,6 +327,8 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 #include <optional>
 
+#include "llvm/Transforms/Instrumentation/Anaconda.h"
+
 using namespace llvm;
 
 static const Regex DefaultAliasRegex(
