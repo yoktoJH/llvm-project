@@ -47,6 +47,17 @@ Value *getValueFromInst(Instruction &inst) {
   return pointerOp;
 }
 
+std::string getLLVMTypeName(Value *val) {
+  std::string type_str;
+  llvm::raw_string_ostream rso(type_str);
+  val->getType()->print(rso);
+  std::string name = rso.str();
+  if (name.size() == 0) {
+    return "unknown type";
+  }
+  return name;
+}
+
 void getVarInfo(Value *pointerOp, std::string &var_name,
                 std::string &type_name) {
 
@@ -57,14 +68,16 @@ void getVarInfo(Value *pointerOp, std::string &var_name,
   // use placeholder values
   if (DVRDeclares.size() == 0) {
     var_name = "unknown var";
-    type_name = "unknown type";
+    type_name = getLLVMTypeName(pointerOp->stripPointerCasts());
     return;
   }
+
   auto declare = DVRDeclares[0];
   auto divariableloc = declare->getVariable();
   var_name = divariableloc->getName().str();
   auto ditype = divariableloc->getType();
   type_name = ditype->getName().str();
+
 }
 
 void getFileLine(Instruction &inst, int &line) {
@@ -271,7 +284,6 @@ void findGlobalVariablesDebufInfo(Module &M,
         &GV,
         GlobalVariableMetadata{{var_name, type_name}, digv->isLocalToUnit()});
   }
-  variable_map
 }
 
 PreservedAnalyses AnacondaPass::run(Module &M, ModuleAnalysisManager &AM) {
