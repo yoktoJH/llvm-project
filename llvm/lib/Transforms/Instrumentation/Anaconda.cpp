@@ -77,7 +77,6 @@ void getVarInfo(Value *pointerOp, std::string &var_name,
   var_name = divariableloc->getName().str();
   auto ditype = divariableloc->getType();
   type_name = ditype->getName().str();
-
 }
 
 void getFileLine(Instruction &inst, int &line) {
@@ -125,7 +124,7 @@ void instrumentLoadStore(inst_iterator I, LLVMContext &context, Module *module,
   // var_type, uint32_t 5 var_offset, char* 6 loc_file,int32_t 7 loc_line, bool
   // 8 is_local, ADDRINT 9 ins)
 
-  SmallVector<Type *, 9> runtime_mem_parameters = {
+  const static SmallVector<Type *, 9> runtime_mem_parameters = {
       PVOID, UINT32, PCHAR, PCHAR, UINT32, PCHAR, INT32, BOOL, UINT64};
 
   auto runtime_mem_type = FunctionType::get(Type::getVoidTy(context),
@@ -205,6 +204,27 @@ void instrumentLoadStore(inst_iterator I, LLVMContext &context, Module *module,
        after_builder.getFalse(), after_builder.getInt64(0)});*/
 }
 
+/// @brief inserts new "stackframe" into the backtracce
+/// @param F function to instrument
+void insertBacktraceCalls(Function &F) {
+
+  LLVMContext &context = F.getContext();
+  Module *module = F.getParent();
+
+  auto runtime_type = FunctionType::get(
+      Type::getVoidTy(context),
+      {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
+
+  auto runtime_func = module->getOrInsertFunction(
+      "anaconda_backtrace_new_stackframe", runtime_type);
+
+  auto builder = IRBuilder<>(&F.front().front());
+
+  auto func_name_global = builder.CreateGlobalString(F.getName());
+
+  builder.CreateCall(runtime_func, {func_name_global});
+}
+
 void insertInitFunctions(Function &F) {
 
   LLVMContext &context = F.getContext();
@@ -230,7 +250,7 @@ void instrumentFunction(Function &F, GlobalVariable *loc_file,
   if (F.getName().compare("main") == 0) {
     insertInitFunctions(F);
   }
-
+  //insertBacktraceCalls(F);
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
 
     instrumentLoadStore(I, context, module, local_variables, loc_file,
