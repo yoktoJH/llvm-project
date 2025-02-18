@@ -11,18 +11,19 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/ValueMap.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <map>
 
 using namespace llvm;
 
 struct VariableMetadata {
-  GlobalVariable *name;
-  GlobalVariable *type;
+  GlobalVariable *Name;
+  GlobalVariable *Type;
 };
 
 struct GlobalVariableMetadata : VariableMetadata {
-  bool isLocal = false;
+  bool IsLocal = false;
 };
 
 using variable_map = std::map<const Value *, VariableMetadata>;
@@ -36,161 +37,157 @@ using global_variable_map = std::map<Value *, GlobalVariableMetadata>;
 #define BOOL Type::getInt1Ty(context)
 #define PVOID PointerType::getUnqual(Type::getInt8Ty(context))
 
-Value *getValueFromInst(Instruction &inst) {
-  Value *pointerOp = nullptr;
-  if (inst.getOpcode() == Instruction::Load) {
-    pointerOp = cast<LoadInst>(inst).getPointerOperand();
+static Value *getValueFromInst(Instruction &Inst) {
+  Value *PointerOp = nullptr;
+  if (Inst.getOpcode() == Instruction::Load) {
+    PointerOp = cast<LoadInst>(Inst).getPointerOperand();
   } else {
-    pointerOp = cast<StoreInst>(inst).getPointerOperand();
+    PointerOp = cast<StoreInst>(Inst).getPointerOperand();
   }
 
-  return pointerOp;
+  return PointerOp;
 }
 
-std::string getLLVMTypeName(Value *val) {
-  std::string type_str;
-  llvm::raw_string_ostream rso(type_str);
-  val->getType()->print(rso);
-  std::string name = rso.str();
-  if (name.size() == 0) {
+static std::string getLLVMTypeName(const Value *Val) {
+  std::string TypeStr;
+  llvm::raw_string_ostream Rso(TypeStr);
+  Val->getType()->print(Rso);
+  std::string Name = Rso.str();
+  if (Name.size() == 0) {
     return "unknown type";
   }
-  return name;
+  return Name;
 }
 
-void getVarInfo(Value *pointerOp, std::string &var_name,
-                std::string &type_name) {
+static void getVarInfo(Value *PointerOp, std::string &VarName,
+                       std::string &TypeName) {
 
-  auto DVRDeclares = findDVRDeclares(pointerOp);
+  const auto DVRDeclares = findDVRDeclares(PointerOp);
   // pointerOp->getNameOrAsOperand
   // errs()<< DVRDeclares.size() << " the size of declares should be 1 \n";
   // there is a chance that the size is 0 for some reason, in this case we will
   // use placeholder values
   if (DVRDeclares.size() == 0) {
-    var_name = "unknown var";
-    type_name = getLLVMTypeName(pointerOp->stripPointerCasts());
+    VarName = "unknown var";
+    TypeName = getLLVMTypeName(PointerOp->stripPointerCasts());
     return;
   }
 
-  auto declare = DVRDeclares[0];
-  auto divariableloc = declare->getVariable();
-  var_name = divariableloc->getName().str();
-  auto ditype = divariableloc->getType();
-  type_name = ditype->getName().str();
+  auto *const Declare = DVRDeclares[0];
+  auto *const DiVariableLoc = Declare->getVariable();
+  VarName = DiVariableLoc->getName().str();
+  auto *DIType = DiVariableLoc->getType();
+  TypeName = DIType->getName().str();
 }
 
-void getFileLine(Instruction &inst, int &line) {
-  DebugLoc dbgloc = inst.getDebugLoc();
-  if (dbgloc.get() == nullptr) {
-    return;
+static int getFileLine(Instruction &Inst) {
+  DebugLoc Dbgloc = Inst.getDebugLoc();
+  if (Dbgloc.get() == nullptr) {
+    return 0;
   }
-  line = dbgloc.getLine();
+  return Dbgloc.getLine();
 }
 
-void getRuntimeFunctions(FunctionCallee &before_func,
-                         FunctionCallee &after_func, Instruction &inst,
-                         Module *module, FunctionType *runtime_mem_type) {
-  if (inst.getOpcode() == Instruction::Load) {
+static void getRuntimeFunctions(FunctionCallee &BeforeFunc,
+                                FunctionCallee &AfterFunc, Instruction &Inst,
+                                Module *Module, FunctionType *RuntimeMemType) {
+  if (Inst.getOpcode() == Instruction::Load) {
 
-    before_func =
-        module->getOrInsertFunction("anaconda_before_read", runtime_mem_type);
+    BeforeFunc =
+        Module->getOrInsertFunction("anaconda_before_read", RuntimeMemType);
 
-    after_func =
-        module->getOrInsertFunction("anaconda_after_read", runtime_mem_type);
-  } else if (inst.getOpcode() == Instruction::Store) {
+    AfterFunc =
+        Module->getOrInsertFunction("anaconda_after_read", RuntimeMemType);
 
-    before_func =
-        module->getOrInsertFunction("anaconda_before_write", runtime_mem_type);
+  } else if (Inst.getOpcode() == Instruction::Store) {
 
-    after_func =
-        module->getOrInsertFunction("anaconda_after_write", runtime_mem_type);
+    BeforeFunc =
+        Module->getOrInsertFunction("anaconda_before_write", RuntimeMemType);
+
+    AfterFunc =
+        Module->getOrInsertFunction("anaconda_after_write", RuntimeMemType);
+
   } else {
     // here go atomics if they are ever impelementede  good engrish btw
   }
 }
 
-void instrumentLoadStore(inst_iterator I, LLVMContext &context, Module *module,
-                         variable_map &local_variables,
-                         GlobalVariable *loc_file,
-                         global_variable_map &global_variables) {
+static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
+                                Module *Module, variable_map &LocalVariables,
+                                GlobalVariable *LocFile,
+                                global_variable_map &GlobalVariables) {
 
-  Instruction &inst = *I;
-  if (inst.getOpcode() != Instruction::Load &&
-      inst.getOpcode() != Instruction::Store) {
-    return;
-  }
+  Instruction &Inst = *I;
 
   // read(ADDRINT=uint64_t 1 addr, uint32_t 2 size, char* 3 var_name, char* 4
   // var_type, uint32_t 5 var_offset, char* 6 loc_file,int32_t 7 loc_line, bool
   // 8 is_local, ADDRINT 9 ins)
 
-  const static SmallVector<Type *, 9> runtime_mem_parameters = {
+  const static SmallVector<Type *, 9> RuntimeMemParameters = {
       PVOID, UINT32, PCHAR, PCHAR, UINT32, PCHAR, INT32, BOOL, UINT64};
 
-  auto runtime_mem_type = FunctionType::get(Type::getVoidTy(context),
-                                            runtime_mem_parameters, false);
+  auto *RuntimeMemType =
+      FunctionType::get(Type::getVoidTy(context), RuntimeMemParameters, false);
 
-  FunctionCallee runtime_before_func;
-  FunctionCallee runtime_after_func;
+  FunctionCallee RuntimeBeforeFunc;
+  FunctionCallee RuntimeAfterFunc;
 
-  getRuntimeFunctions(runtime_before_func, runtime_after_func, inst, module,
-                      runtime_mem_type);
+  getRuntimeFunctions(RuntimeBeforeFunc, RuntimeAfterFunc, Inst, Module,
+                      RuntimeMemType);
 
-  auto before_builder = IRBuilder<>(&inst);
-  auto after_I = I;
-  ++after_I;
-  auto after_builder = IRBuilder<>(&*after_I);
+  auto BeforeBuilder = IRBuilder<>(&Inst);
+  auto AfterI = I;
+  ++AfterI;
+  auto AfterBuilder = IRBuilder<>(&*AfterI);
 
   // DIFile *dbgfile = cast<DIFile>(dbgloc.getScope());
   /*errs() << "dbglock is" ;
   dbgloc.getAsMDNode()->print(errs());
   errs()<<"\n";*/
-  Value *pointerOp = getValueFromInst(inst);
+  Value *PointerOp = getValueFromInst(Inst);
 
-  GlobalVariable *var_name;
-  GlobalVariable *var_type;
-  bool isLocal = false;
-  int line_num = 0;
+  GlobalVariable *VarName;
+  GlobalVariable *VarType;
+  bool IsLocal = false;
+  int LineNum = getFileLine(Inst);
 
-  getFileLine(inst, line_num);
-
-  if (local_variables.find(pointerOp) != local_variables.end()) {
+  if (LocalVariables.find(PointerOp) != LocalVariables.end()) {
     // it is a local variable
-    VariableMetadata &data = local_variables.at(pointerOp);
-    var_name = data.name;
-    var_type = data.type;
+    auto &[Name, Type] = LocalVariables.at(PointerOp);
+    VarName = Name;
+    VarType = Type;
 
-  } else if (global_variables.find(pointerOp) != global_variables.end()) {
-    GlobalVariableMetadata &data = global_variables.at(pointerOp);
-    var_name = data.name;
-    var_type = data.type;
-    isLocal = data.isLocal;
+  } else if (GlobalVariables.find(PointerOp) != GlobalVariables.end()) {
+    GlobalVariableMetadata &Data = GlobalVariables.at(PointerOp);
+    VarName = Data.Name;
+    VarType = Data.Type;
+    IsLocal = Data.IsLocal;
 
   } else { // new local variable
-    std::string name;
-    std::string type_name;
-    getVarInfo(pointerOp, name, type_name);
-    var_name = before_builder.CreateGlobalString(name);
-    var_type = before_builder.CreateGlobalString(type_name);
-    local_variables.emplace(pointerOp, VariableMetadata{var_name, var_type});
+    std::string Name;
+    std::string TypeName;
+    getVarInfo(PointerOp, Name, TypeName);
+    VarName = BeforeBuilder.CreateGlobalString(Name);
+    VarType = BeforeBuilder.CreateGlobalString(TypeName);
+    LocalVariables.emplace(PointerOp, VariableMetadata{VarName, VarType});
   }
 
-  auto size = module->getDataLayout().getTypeAllocSize(pointerOp->getType());
+  auto Size = Module->getDataLayout().getTypeAllocSize(PointerOp->getType());
 
   // read(ADDRINT=uint64_t 1 addr, uint32_t 2 size, char* 3 var_name, char* 4
   // var_type, uint32_t 5 var_offset, char* 6 loc_file,int32_t 7 loc_line,
   // bool 8 is_local, ADDRINT 9 ins)
 
-  auto create_call_lambda = [&](IRBuilder<> &builder, auto &fun) {
-    builder.CreateCall(fun, {pointerOp, builder.getInt32(size), var_name,
-                             var_type, builder.getInt32(0), loc_file,
-                             builder.getInt32(line_num),
-                             isLocal ? builder.getTrue() : builder.getFalse(),
-                             builder.getInt64(0)});
+  auto CreateCallLambda = [&](IRBuilder<> &Builder, auto &Fun) {
+    Builder.CreateCall(Fun,
+                       {PointerOp, Builder.getInt32(Size), VarName, VarType,
+                        Builder.getInt32(0), LocFile, Builder.getInt32(LineNum),
+                        IsLocal ? Builder.getTrue() : Builder.getFalse(),
+                        Builder.getInt64(0)});
   };
 
-  create_call_lambda(before_builder, runtime_before_func);
-  create_call_lambda(after_builder, runtime_after_func);
+  CreateCallLambda(BeforeBuilder, RuntimeBeforeFunc);
+  CreateCallLambda(AfterBuilder, RuntimeAfterFunc);
   /*before_builder.CreateCall(
       runtime_before_func,
       {address, before_builder.getInt32(size), var_name, var_type,
@@ -206,55 +203,106 @@ void instrumentLoadStore(inst_iterator I, LLVMContext &context, Module *module,
 
 /// @brief inserts new "stackframe" into the backtracce
 /// @param F function to instrument
-void insertBacktraceCalls(Function &F) {
+static void insertBacktraceCalls(Function &F) {
 
-  LLVMContext &context = F.getContext();
-  Module *module = F.getParent();
+  LLVMContext &Context = F.getContext();
+  Module *Module = F.getParent();
 
-  auto runtime_type = FunctionType::get(
-      Type::getVoidTy(context),
-      {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
+  auto *RuntimeType = FunctionType::get(
+      Type::getVoidTy(Context),
+      {PointerType::getUnqual(Type::getInt8Ty(Context))}, false);
 
-  auto runtime_func = module->getOrInsertFunction(
-      "anaconda_backtrace_new_stackframe", runtime_type);
+  const auto RuntimeFunc = Module->getOrInsertFunction(
+      "anaconda_backtrace_new_stackframe", RuntimeType);
 
-  auto builder = IRBuilder<>(&F.front().front());
+  auto Builder = IRBuilder<>(&F.front().front());
 
-  auto func_name_global = builder.CreateGlobalString(F.getName());
+  auto *FuncNameGlobal = Builder.CreateGlobalString(F.getName());
 
-  builder.CreateCall(runtime_func, {func_name_global});
+  Builder.CreateCall(RuntimeFunc, {FuncNameGlobal});
 }
 
-void insertInitFunctions(Function &F) {
+static void insertInitFunctions(Function &F) {
 
-  LLVMContext &context = F.getContext();
-  Module *module = F.getParent();
+  LLVMContext &Context = F.getContext();
+  Module *Module = F.getParent();
 
-  auto runtime_type = FunctionType::get(Type::getVoidTy(context), {}, false);
+  auto *RuntimeType = FunctionType::get(Type::getVoidTy(Context), {}, false);
 
-  auto runtime_func =
-      module->getOrInsertFunction("atomrace_init", runtime_type);
+  auto RuntimeFunc = Module->getOrInsertFunction("atomrace_init", RuntimeType);
 
-  auto builder = IRBuilder<>(&F.front().front());
+  auto Builder = IRBuilder<>(&F.front().front());
 
-  builder.CreateCall(runtime_func, {});
+  Builder.CreateCall(RuntimeFunc, {});
+}
+/*
+void instrumentLocks(inst_iterator I, LLVMContext &context, Module *module,
+                     GlobalVariable *loc_file) {}
+*/
+// replaces the usual thread create call with my function to allow tracing
+// during the analysis
+void replaceThreadCreate(inst_iterator I, LLVMContext &context, Module *Module,
+                         GlobalVariable *LocFile) {
+
+  auto &Inst = cast<CallInst>(*I);
+  auto *OriginalType = Inst.getFunctionType();
+  // thread_create_anaconda(4x void*, char* 6 loc_file,int32_t 7 loc_line)
+  auto *RuntimeType =
+      FunctionType::get(OriginalType->getReturnType(),
+                        {PVOID, PVOID, PVOID, PVOID, PCHAR, INT32}, false);
+  FunctionCallee Func =
+      Module->getOrInsertFunction("thread_create_anaconda", RuntimeType);
+
+  auto Builder = IRBuilder<>(&*I);
+  auto *NewCall = Builder.CreateCall(Func, {Inst.getOperand(0), Inst.getOperand(1),
+                            Inst.getOperand(2), Inst.getOperand(3), LocFile,
+                            Builder.getInt32(getFileLine(Inst))});
+  Inst.replaceAllUsesWith(NewCall);
+  Inst.eraseFromParent();
+}
+#define THREAD_CREATE "pthread_create"
+void instrumentFunctionCall(inst_iterator I, LLVMContext &Context,
+                            Module *Module, GlobalVariable *LocFile) {
+
+  // here we will add backtrace shenanigans and thread creation and locking and
+  // unlocking-
+  auto &Inst = cast<CallInst>(*I);
+  if (Inst.getCalledFunction()->getName().compare(THREAD_CREATE) == 0) {
+    replaceThreadCreate(I, Context, Module, LocFile);
+  }
+
 }
 
-void instrumentFunction(Function &F, GlobalVariable *loc_file,
-                        global_variable_map &global_variables) {
+
+
+static void instrumentFunction(Function &F, GlobalVariable *LocFile,
+                               global_variable_map &GlobalVariables) {
   // get some basic values necessary for instrumentation
-  variable_map local_variables;
-  LLVMContext &context = F.getContext();
-  Module *module = F.getParent();
+  variable_map LocalVariables;
+  LLVMContext &Context = F.getContext();
+  Module *Module = F.getParent();
 
   if (F.getName().compare("main") == 0) {
     insertInitFunctions(F);
   }
-  //insertBacktraceCalls(F);
-  for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
 
-    instrumentLoadStore(I, context, module, local_variables, loc_file,
-                        global_variables);
+  // insertBacktraceCalls(F);
+  for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
+    switch (Instruction &Inst = *I; Inst.getOpcode()) {
+    case Instruction::Load:
+
+    case Instruction::Store:
+      instrumentLoadStore(I, Context, Module, LocalVariables, LocFile,
+                          GlobalVariables);
+      break;
+    case Instruction::Call:
+      instrumentFunctionCall(I, Context, Module, LocFile);
+      break;
+    default:
+      break;
+    }
+
+    //instrumentLocks(I, Context, Module, LocFile);
   }
   /*
     // insert the instrumentation function declaration into the module(file)
@@ -275,9 +323,10 @@ void instrumentFunction(Function &F, GlobalVariable *loc_file,
   // errs() << F.getName() << "\n";
 }
 
-GlobalVariable *createInsertGlobalSring(Module &M, StringRef str) {
+static GlobalVariable *createInsertGlobalString(Module &M,
+                                                const StringRef Str) {
   Constant *StrConstant =
-      ConstantDataArray::getString(M.getContext(), str, true);
+      ConstantDataArray::getString(M.getContext(), Str, true);
 
   auto *GV = new GlobalVariable(M, StrConstant->getType(), true,
                                 GlobalValue::PrivateLinkage, StrConstant, "",
@@ -287,34 +336,33 @@ GlobalVariable *createInsertGlobalSring(Module &M, StringRef str) {
   return GV;
 }
 
-void findGlobalVariablesDebufInfo(Module &M,
-                                  global_variable_map &global_variables) {
+static void findGlobalVariablesDebugInfo(Module &M,
+                                         global_variable_map &GlobalVariables) {
   for (GlobalVariable &GV : M.globals()) {
-    SmallVector<DIGlobalVariableExpression *, 1> debuginfo;
-    GV.getDebugInfo(debuginfo);
-    if (debuginfo.size() == 0) {
+    SmallVector<DIGlobalVariableExpression *, 1> Debuginfo;
+    GV.getDebugInfo(Debuginfo);
+    if (Debuginfo.size() == 0) {
       errs() << "global variable " << GV.getName() << " has no debug info\n";
       return;
     }
-    DIGlobalVariableExpression *digve = debuginfo[0];
-    DIGlobalVariable *digv = digve->getVariable();
-    auto var_name = createInsertGlobalSring(M, digv->getName());
-    auto type_name = createInsertGlobalSring(M, digv->getType()->getName());
-    global_variables.emplace(
-        &GV,
-        GlobalVariableMetadata{{var_name, type_name}, digv->isLocalToUnit()});
+    DIGlobalVariableExpression *Digve = Debuginfo[0];
+    DIGlobalVariable *Digv = Digve->getVariable();
+    auto *const VarName = createInsertGlobalString(M, Digv->getName());
+    auto *const TypeName =
+        createInsertGlobalString(M, Digv->getType()->getName());
+    GlobalVariables.emplace(&GV, GlobalVariableMetadata{{VarName, TypeName},
+                                                        Digv->isLocalToUnit()});
   }
 }
 
 PreservedAnalyses AnacondaPass::run(Module &M, ModuleAnalysisManager &AM) {
 
-  std::string file_name = M.getSourceFileName();
-
-  auto *GV = createInsertGlobalSring(M, file_name);
-  global_variable_map global_variables;
-  findGlobalVariablesDebufInfo(M, global_variables);
+  const std::string FileName = M.getSourceFileName();
+  auto *GV = createInsertGlobalString(M, FileName);
+  global_variable_map GlobalVariables;
+  findGlobalVariablesDebugInfo(M, GlobalVariables);
   for (Function &F : M.functions()) {
-    instrumentFunction(F, GV, global_variables);
+    instrumentFunction(F, GV, GlobalVariables);
   }
   return PreservedAnalyses::none();
 }
