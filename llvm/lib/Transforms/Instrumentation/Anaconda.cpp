@@ -203,14 +203,12 @@ static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
 
 /// @brief inserts new "stackframe" into the backtracce
 /// @param F function to instrument
-static void insertBacktraceCalls(Function &F) {
-
-  LLVMContext &Context = F.getContext();
-  Module *Module = F.getParent();
+static void insertBacktraceCalls(Function &F, LLVMContext &context,
+                                 Module *Module) {
 
   auto *RuntimeType = FunctionType::get(
-      Type::getVoidTy(Context),
-      {PointerType::getUnqual(Type::getInt8Ty(Context))}, false);
+      Type::getVoidTy(context),
+      {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
 
   const auto RuntimeFunc = Module->getOrInsertFunction(
       "anaconda_backtrace_new_stackframe", RuntimeType);
@@ -239,41 +237,58 @@ static void insertInitFunctions(Function &F) {
 void instrumentLocks(inst_iterator I, LLVMContext &context, Module *module,
                      GlobalVariable *loc_file) {}
 */
-// replaces the usual thread create call with my function to allow tracing
-// during the analysis
-void replaceThreadCreate(inst_iterator I, LLVMContext &context, Module *Module,
-                         GlobalVariable *LocFile) {
+// gives runtime information about where was thread started
+static void insertThreadCreate(inst_iterator I, LLVMContext &context,
+                               Module *Module, GlobalVariable *LocFile) {
 
+  inst_iterator II = I;
+  ++II;
   auto &Inst = cast<CallInst>(*I);
-  auto *OriginalType = Inst.getFunctionType();
-  // thread_create_anaconda(4x void*, char* 6 loc_file,int32_t 7 loc_line)
-  auto *RuntimeType =
-      FunctionType::get(OriginalType->getReturnType(),
-                        {PVOID, PVOID, PVOID, PVOID, PCHAR, INT32}, false);
+
+  static FunctionType *OriginalType = Inst.getFunctionType();
+  // thread_create_anaconda(retval,threadid, ,char* 6 loc_file,int32_t 7
+  // loc_line)
+  static auto *RuntimeType = FunctionType::get(
+      Type::getVoidTy(context),
+      {I->getType(), OriginalType->getFunctionParamType(0), PCHAR, INT32},
+      false);
+
   FunctionCallee Func =
       Module->getOrInsertFunction("thread_create_anaconda", RuntimeType);
 
-  auto Builder = IRBuilder<>(&*I);
-  auto *NewCall = Builder.CreateCall(Func, {Inst.getOperand(0), Inst.getOperand(1),
-                            Inst.getOperand(2), Inst.getOperand(3), LocFile,
+  auto Builder = IRBuilder<>(&*II);
+  Builder.CreateCall(Func, {&*I, Inst.getOperand(0), LocFile,
                             Builder.getInt32(getFileLine(Inst))});
-  Inst.replaceAllUsesWith(NewCall);
-  Inst.eraseFromParent();
 }
-#define THREAD_CREATE "pthread_create"
-void instrumentFunctionCall(inst_iterator I, LLVMContext &Context,
+
+static const char ThreadCreateFuncName[] = "pthread_create";
+void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
                             Module *Module, GlobalVariable *LocFile) {
 
   // here we will add backtrace shenanigans and thread creation and locking and
   // unlocking-
+  inst_iterator II = I;
+  ++II;
   auto &Inst = cast<CallInst>(*I);
-  if (Inst.getCalledFunction()->getName().compare(THREAD_CREATE) == 0) {
-    replaceThreadCreate(I, Context, Module, LocFile);
+  
+  static FunctionType *BeforeCallType = FunctionType::get(Type::getVoidTy(context),{PCHAR,INT32},false);
+  static FunctionType *AfterCallType = FunctionType::get(Type::getVoidTy(context),{},false);
+
+  static auto BeforeFunction = Module->getOrInsertFunction("before_call_anaconda",BeforeCallType);
+  static auto AfterFunction = Module->getOrInsertFunction("after_call_anaconda",AfterCallType);
+
+  auto Builder = IRBuilder<>(&*I);
+  Builder.CreateCall(BeforeFunction,{LocFile,Builder.getInt32(getFileLine(Inst))});
+  IRBuilder<>(&*II).CreateCall(AfterFunction,{});
+
+
+  if (Inst.getCalledFunction()->getName().compare(ThreadCreateFuncName) == 0) {
+    insertThreadCreate(I, context, Module, LocFile);
+    //skip the thread creation callback
+    ++I;  
   }
-
+  
 }
-
-
 
 static void instrumentFunction(Function &F, GlobalVariable *LocFile,
                                global_variable_map &GlobalVariables) {
@@ -294,15 +309,22 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
     case Instruction::Store:
       instrumentLoadStore(I, Context, Module, LocalVariables, LocFile,
                           GlobalVariables);
+      // move the iterator in order to skip the call we just inserted
+      ++I;
       break;
+
     case Instruction::Call:
       instrumentFunctionCall(I, Context, Module, LocFile);
+      // move the iterator in order to skip the call we just inserted
+      ++I;
       break;
+
     default:
       break;
     }
+    
 
-    //instrumentLocks(I, Context, Module, LocFile);
+    // instrumentLocks(I, Context, Module, LocFile);
   }
   /*
     // insert the instrumentation function declaration into the module(file)
