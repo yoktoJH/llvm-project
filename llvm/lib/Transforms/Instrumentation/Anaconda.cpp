@@ -201,23 +201,31 @@ static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
        after_builder.getFalse(), after_builder.getInt64(0)});*/
 }
 
-/// @brief inserts new "stackframe" into the backtracce
-/// @param F function to instrument
-static void insertBacktraceCalls(Function &F, LLVMContext &context,
+
+static void insertBacktraceStepInCall(Function &F, LLVMContext &context,
                                  Module *Module) {
 
   auto *RuntimeType = FunctionType::get(
       Type::getVoidTy(context),
       {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
 
-  const auto RuntimeFunc = Module->getOrInsertFunction(
-      "anaconda_backtrace_new_stackframe", RuntimeType);
-
+  auto RuntimeFunc = Module->getOrInsertFunction(
+      "anaconda_step_into_funtion", RuntimeType);
+  
   auto Builder = IRBuilder<>(&F.front().front());
 
   auto *FuncNameGlobal = Builder.CreateGlobalString(F.getName());
 
   Builder.CreateCall(RuntimeFunc, {FuncNameGlobal});
+}
+
+static void insertBacktraceStepOutCall(inst_iterator I, LLVMContext &context,
+  Module *Module){
+  auto *RuntimeType = FunctionType::get(Type::getVoidTy(context), {},false);
+
+  const auto RuntimeFunc = Module->getOrInsertFunction("anaconda_step_out_of_function",RuntimeType);
+  
+  IRBuilder<>(&*I).CreateCall(RuntimeFunc,{});
 }
 
 static void insertInitFunctions(Function &F) {
@@ -261,33 +269,38 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
                             Builder.getInt32(getFileLine(Inst))});
 }
 
-static const char ThreadCreateFuncName[] = "pthread_create";
 void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
                             Module *Module, GlobalVariable *LocFile) {
+  
+  
+  static const char ThreadCreateFuncName[] = "pthread_create";
 
   // here we will add backtrace shenanigans and thread creation and locking and
   // unlocking-
   inst_iterator II = I;
   ++II;
   auto &Inst = cast<CallInst>(*I);
-  
-  static FunctionType *BeforeCallType = FunctionType::get(Type::getVoidTy(context),{PCHAR,INT32},false);
-  static FunctionType *AfterCallType = FunctionType::get(Type::getVoidTy(context),{},false);
 
-  static auto BeforeFunction = Module->getOrInsertFunction("before_call_anaconda",BeforeCallType);
-  static auto AfterFunction = Module->getOrInsertFunction("after_call_anaconda",AfterCallType);
+  static FunctionType *BeforeCallType =
+      FunctionType::get(Type::getVoidTy(context), {PCHAR, INT32}, false);
+  static FunctionType *AfterCallType =
+      FunctionType::get(Type::getVoidTy(context), {}, false);
+
+  static auto BeforeFunction =
+      Module->getOrInsertFunction("before_call_anaconda", BeforeCallType);
+  static auto AfterFunction =
+      Module->getOrInsertFunction("after_call_anaconda", AfterCallType);
 
   auto Builder = IRBuilder<>(&*I);
-  Builder.CreateCall(BeforeFunction,{LocFile,Builder.getInt32(getFileLine(Inst))});
-  IRBuilder<>(&*II).CreateCall(AfterFunction,{});
-
+  Builder.CreateCall(BeforeFunction,
+                     {LocFile, Builder.getInt32(getFileLine(Inst))});
+  IRBuilder<>(&*II).CreateCall(AfterFunction, {});
 
   if (Inst.getCalledFunction()->getName().compare(ThreadCreateFuncName) == 0) {
     insertThreadCreate(I, context, Module, LocFile);
-    //skip the thread creation callback
-    ++I;  
+    // skip the thread creation callback
+    ++I;
   }
-  
 }
 
 static void instrumentFunction(Function &F, GlobalVariable *LocFile,
@@ -301,7 +314,8 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
     insertInitFunctions(F);
   }
 
-  // insertBacktraceCalls(F);
+
+  
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
     switch (Instruction &Inst = *I; Inst.getOpcode()) {
     case Instruction::Load:
@@ -319,13 +333,20 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
       ++I;
       break;
 
+    case Instruction::Ret:
+      insertBacktraceStepOutCall(I,Context,Module);
+      break;
     default:
       break;
     }
-    
-
     // instrumentLocks(I, Context, Module, LocFile);
   }
+
+  //skip epty functions, as those are probably just declarations
+  if (F.size()!=0){
+    insertBacktraceStepInCall(F,Context,Module);  
+  }
+  
   /*
     // insert the instrumentation function declaration into the module(file)
     auto runtime_type = FunctionType::get(
