@@ -210,7 +210,7 @@ static void insertBacktraceStepInCall(Function &F, LLVMContext &context,
       {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
 
   auto RuntimeFunc = Module->getOrInsertFunction(
-      "anaconda_step_into_funtion", RuntimeType);
+      "anaconda_step_into_function", RuntimeType);
   
   auto Builder = IRBuilder<>(&F.front().front());
 
@@ -262,7 +262,7 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
       false);
 
   FunctionCallee Func =
-      Module->getOrInsertFunction("thread_create_anaconda", RuntimeType);
+      Module->getOrInsertFunction("anaconda_thread_create", RuntimeType);
 
   auto Builder = IRBuilder<>(&*II);
   Builder.CreateCall(Func, {&*I, Inst.getOperand(0), LocFile,
@@ -287,9 +287,9 @@ void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
       FunctionType::get(Type::getVoidTy(context), {}, false);
 
   static auto BeforeFunction =
-      Module->getOrInsertFunction("before_call_anaconda", BeforeCallType);
+      Module->getOrInsertFunction("anaconda_before_call", BeforeCallType);
   static auto AfterFunction =
-      Module->getOrInsertFunction("after_call_anaconda", AfterCallType);
+      Module->getOrInsertFunction("anaconda_after_call", AfterCallType);
 
   auto Builder = IRBuilder<>(&*I);
   Builder.CreateCall(BeforeFunction,
