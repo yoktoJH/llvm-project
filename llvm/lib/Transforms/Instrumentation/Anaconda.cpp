@@ -201,17 +201,16 @@ static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
        after_builder.getFalse(), after_builder.getInt64(0)});*/
 }
 
-
 static void insertBacktraceStepInCall(Function &F, LLVMContext &context,
-                                 Module *Module) {
+                                      Module *Module) {
 
   auto *RuntimeType = FunctionType::get(
       Type::getVoidTy(context),
       {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
 
-  auto RuntimeFunc = Module->getOrInsertFunction(
-      "anaconda_step_into_function", RuntimeType);
-  
+  auto RuntimeFunc =
+      Module->getOrInsertFunction("anaconda_step_into_function", RuntimeType);
+
   auto Builder = IRBuilder<>(&F.front().front());
 
   auto *FuncNameGlobal = Builder.CreateGlobalString(F.getName());
@@ -220,12 +219,13 @@ static void insertBacktraceStepInCall(Function &F, LLVMContext &context,
 }
 
 static void insertBacktraceStepOutCall(inst_iterator I, LLVMContext &context,
-  Module *Module){
-  auto *RuntimeType = FunctionType::get(Type::getVoidTy(context), {},false);
+                                       Module *Module) {
+  auto *RuntimeType = FunctionType::get(Type::getVoidTy(context), {}, false);
 
-  const auto RuntimeFunc = Module->getOrInsertFunction("anaconda_step_out_of_function",RuntimeType);
-  
-  IRBuilder<>(&*I).CreateCall(RuntimeFunc,{});
+  const auto RuntimeFunc =
+      Module->getOrInsertFunction("anaconda_step_out_of_function", RuntimeType);
+
+  IRBuilder<>(&*I).CreateCall(RuntimeFunc, {});
 }
 
 static void insertInitFunctions(Function &F) {
@@ -235,7 +235,7 @@ static void insertInitFunctions(Function &F) {
 
   auto *RuntimeType = FunctionType::get(Type::getVoidTy(Context), {}, false);
 
-  auto RuntimeFunc = Module->getOrInsertFunction("atomrace_init", RuntimeType);
+  auto RuntimeFunc = Module->getOrInsertFunction("anaconda_init", RuntimeType);
 
   auto Builder = IRBuilder<>(&F.front().front());
 
@@ -269,14 +269,92 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
                             Builder.getInt32(getFileLine(Inst))});
 }
 
-void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
-                            Module *Module, GlobalVariable *LocFile) {
-  
-  
-  static const char ThreadCreateFuncName[] = "pthread_create";
+static void instrumentLocking(inst_iterator &I, LLVMContext &context,
+                              Module *Module, bool isWriteLock) {
 
-  // here we will add backtrace shenanigans and thread creation and locking and
-  // unlocking-
+  static FunctionType *FnType =
+      FunctionType::get(Type::getVoidTy(context), {PVOID, BOOL}, false);
+
+  inst_iterator II = I;
+  ++II;
+
+  static auto BeforeFunction =
+      Module->getOrInsertFunction("anaconda_before_lock", FnType);
+  static auto AfterFunction =
+      Module->getOrInsertFunction("anaconda_after_lock", FnType);
+
+  auto BeforeBuilder = IRBuilder<>(&*I);
+  auto AfterBuilder = IRBuilder<>(&*II);
+  BeforeBuilder.CreateCall(BeforeFunction,
+                           {I->getOperand(0), isWriteLock
+                                                  ? BeforeBuilder.getTrue()
+                                                  : BeforeBuilder.getFalse()});
+  AfterBuilder.CreateCall(
+      AfterFunction, {I->getOperand(0), isWriteLock ? AfterBuilder.getTrue()
+                                                    : AfterBuilder.getFalse()});
+}
+
+static void instrumentUnlocking(inst_iterator &I, LLVMContext &context,
+                                Module *Module) {
+  static FunctionType *FnType =
+      FunctionType::get(Type::getVoidTy(context), {PVOID}, false);
+
+  inst_iterator II = I;
+  ++II;
+
+  static auto BeforeFunction =
+      Module->getOrInsertFunction("anaconda_before_unlock", FnType);
+  static auto AfterFunction =
+      Module->getOrInsertFunction("anaconda_after_unlock", FnType);
+
+  auto BeforeBuilder = IRBuilder<>(&*I);
+  auto AfterBuilder = IRBuilder<>(&*II);
+  BeforeBuilder.CreateCall(BeforeFunction, {I->getOperand(0)});
+  AfterBuilder.CreateCall(AfterFunction, {I->getOperand(0)});
+}
+
+static void instrumentJoin(inst_iterator &I, LLVMContext &context,
+                           Module *Module) {
+
+
+  inst_iterator II = I;
+  ++II;
+  auto &Inst = cast<CallInst>(*I);
+
+  static FunctionType *OriginalType = Inst.getFunctionType();
+  // thread_create_anaconda(retval,threadid, ,char* 6 loc_file,int32_t 7
+  // loc_line)
+  static auto *FnType = FunctionType::get(
+      Type::getVoidTy(context),
+      {OriginalType->getFunctionParamType(0)},
+      false);
+
+  static auto BeforeFunction =
+      Module->getOrInsertFunction("anaconda_before_join", FnType);
+  static auto AfterFunction =
+      Module->getOrInsertFunction("anaconda_after_join", FnType);
+
+  auto BeforeBuilder = IRBuilder<>(&*I);
+  auto AfterBuilder = IRBuilder<>(&*II);
+  BeforeBuilder.CreateCall(BeforeFunction, {Inst.getOperand(0)});
+  AfterBuilder.CreateCall(AfterFunction, {Inst.getOperand(0)});
+}
+
+static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
+                                   Module *Module, GlobalVariable *LocFile) {
+
+  // this is written like this, because I expect this to be changed to a pass
+  // parameter these should be configurable in  future
+  static const char ThreadCreateFuncName[] = "pthread_create";
+  static const char LockMutexFuncName[] = "pthread_mutex_lock";
+  static const char RdLockRWLockFuncName[] = "pthread_rwlock_rdlock";
+  static const char WrLockRWLockFuncName[] = "pthread_rwlock_rdlock";
+  static const char UnlockMutexFuncName[] = "pthread_mutex_unlock";
+  static const char UnlockRWLockFuncName[] = "pthread_rwlock_unlock";
+  static const char JoinThreadFuncName[] = "pthread_join";
+
+  // here we will add backtrace shenanigans and thread creation and locking
+  // and unlocking-
   inst_iterator II = I;
   ++II;
   auto &Inst = cast<CallInst>(*I);
@@ -300,6 +378,29 @@ void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
     insertThreadCreate(I, context, Module, LocFile);
     // skip the thread creation callback
     ++I;
+  } else if (Inst.getCalledFunction()->getName().compare(LockMutexFuncName) ==
+                 0 ||
+             Inst.getCalledFunction()->getName().compare(
+                 WrLockRWLockFuncName) == 0) {
+
+    instrumentLocking(I, context, Module, true);
+    ++I;
+  } else if (Inst.getCalledFunction()->getName().compare(
+                 RdLockRWLockFuncName) == 0) {
+
+    instrumentLocking(I, context, Module, false);
+    ++I;
+  } else if (Inst.getCalledFunction()->getName().compare(UnlockMutexFuncName) ==
+                 0 ||
+             Inst.getCalledFunction()->getName().compare(
+                 UnlockRWLockFuncName) == 0) {
+
+    instrumentUnlocking(I, context, Module);
+    ++I;
+  } else if (Inst.getCalledFunction()->getName().compare(JoinThreadFuncName) ==
+             0) {
+    instrumentJoin(I, context, Module);
+    ++I;
   }
 }
 
@@ -310,12 +411,6 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
   LLVMContext &Context = F.getContext();
   Module *Module = F.getParent();
 
-  if (F.getName().compare("main") == 0) {
-    insertInitFunctions(F);
-  }
-
-
-  
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
     switch (Instruction &Inst = *I; Inst.getOpcode()) {
     case Instruction::Load:
@@ -334,7 +429,7 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
       break;
 
     case Instruction::Ret:
-      insertBacktraceStepOutCall(I,Context,Module);
+      insertBacktraceStepOutCall(I, Context, Module);
       break;
     default:
       break;
@@ -342,11 +437,15 @@ static void instrumentFunction(Function &F, GlobalVariable *LocFile,
     // instrumentLocks(I, Context, Module, LocFile);
   }
 
-  //skip epty functions, as those are probably just declarations
-  if (F.size()!=0){
-    insertBacktraceStepInCall(F,Context,Module);  
+  // skip empty functions, as those are probably just declarations
+  if (F.size() != 0) {
+    insertBacktraceStepInCall(F, Context, Module);
   }
-  
+
+  if (F.getName().compare("main") == 0) {
+    insertInitFunctions(F);
+  }
+
   /*
     // insert the instrumentation function declaration into the module(file)
     auto runtime_type = FunctionType::get(
