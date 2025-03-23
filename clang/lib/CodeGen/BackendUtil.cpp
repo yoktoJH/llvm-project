@@ -90,6 +90,9 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <memory>
 #include <optional>
+
+#include "llvm/Transforms/Instrumentation/Anaconda.h"
+
 using namespace clang;
 using namespace llvm;
 
@@ -99,6 +102,9 @@ using namespace llvm;
 
 namespace llvm {
 extern cl::opt<bool> PrintPipelinePasses;
+
+// Anaconda specific option
+static cl::opt<bool> Anacondaopt("anaconda", cl::init(false),cl::desc("enables instrumentation for anaconda"));
 
 // Experiment to move sanitizers earlier.
 static cl::opt<bool> ClSanitizeOnOptimizerEarlyEP(
@@ -1146,6 +1152,10 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   if (LangOpts.HIPStdPar && !LangOpts.CUDAIsDevice &&
       LangOpts.HIPStdParInterposeAlloc)
     MPM.addPass(HipStdParAllocationInterpositionPass());
+
+  if (Anacondaopt){
+    MPM.addPass(AnacondaPass());
+  }
 
   // Now that we have all of the passes ready, run them.
   {
