@@ -1,5 +1,5 @@
-#ifndef LLVM_TRANSFORMS_UTILS_ANACONDA_H
-#define LLVM_TRANSFORMS_UTILS_ANACONDA_H
+#ifndef LLVM_TRANSFORMS_UTILS_LACHESIS_H
+#define LLVM_TRANSFORMS_UTILS_LACHESIS_H
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Value.h"
@@ -13,7 +13,7 @@ namespace llvm {
 
 // this pass should be a module runner as it modifies global variables and inserts functions
 //
-class AnacondaPass : public PassInfoMixin<AnacondaPass> {
+class LachesisPass : public PassInfoMixin<LachesisPass> {
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 
@@ -22,4 +22,4 @@ public:
 
 } // namespace llvm
 
-#endif // LLVM_TRANSFORMS_UTILS_ANACONDA_H
+#endif // LLVM_TRANSFORMS_UTILS_LACHESIS_H

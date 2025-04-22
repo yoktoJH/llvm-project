@@ -1,4 +1,4 @@
-#include "llvm/Transforms/Instrumentation/Anaconda.h"
+#include "llvm/Transforms/Instrumentation/Lachesis.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
@@ -94,18 +94,18 @@ static void getRuntimeFunctions(FunctionCallee &BeforeFunc,
   if (Inst.getOpcode() == Instruction::Load) {
 
     BeforeFunc =
-        Module->getOrInsertFunction("anaconda_before_read", RuntimeMemType);
+        Module->getOrInsertFunction("lachesis_before_read", RuntimeMemType);
 
     AfterFunc =
-        Module->getOrInsertFunction("anaconda_after_read", RuntimeMemType);
+        Module->getOrInsertFunction("lachesis_after_read", RuntimeMemType);
 
   } else if (Inst.getOpcode() == Instruction::Store) {
 
     BeforeFunc =
-        Module->getOrInsertFunction("anaconda_before_write", RuntimeMemType);
+        Module->getOrInsertFunction("lachesis_before_write", RuntimeMemType);
 
     AfterFunc =
-        Module->getOrInsertFunction("anaconda_after_write", RuntimeMemType);
+        Module->getOrInsertFunction("lachesis_after_write", RuntimeMemType);
 
   } else {
     // here go atomics if they are ever impelementede  good engrish btw
@@ -209,7 +209,7 @@ static void insertBacktraceStepInCall(Function &F, LLVMContext &context,
       {PointerType::getUnqual(Type::getInt8Ty(context))}, false);
 
   auto RuntimeFunc =
-      Module->getOrInsertFunction("anaconda_step_into_function", RuntimeType);
+      Module->getOrInsertFunction("lachesis_step_into_function", RuntimeType);
 
   auto Builder = IRBuilder<>(&F.front().front());
 
@@ -223,7 +223,7 @@ static void insertBacktraceStepOutCall(inst_iterator I, LLVMContext &context,
   auto *RuntimeType = FunctionType::get(Type::getVoidTy(context), {}, false);
 
   const auto RuntimeFunc =
-      Module->getOrInsertFunction("anaconda_step_out_of_function", RuntimeType);
+      Module->getOrInsertFunction("lachesis_step_out_of_function", RuntimeType);
 
   IRBuilder<>(&*I).CreateCall(RuntimeFunc, {});
 }
@@ -235,7 +235,7 @@ static void insertInitFunctions(Function &F) {
 
   auto *RuntimeType = FunctionType::get(Type::getVoidTy(Context), {}, false);
 
-  auto RuntimeFunc = Module->getOrInsertFunction("anaconda_init", RuntimeType);
+  auto RuntimeFunc = Module->getOrInsertFunction("lachesis_init", RuntimeType);
 
   auto Builder = IRBuilder<>(&F.front().front());
 
@@ -254,7 +254,7 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
   auto &Inst = cast<CallInst>(*I);
 
   static FunctionType *OriginalType = Inst.getFunctionType();
-  // thread_create_anaconda(retval,threadid, ,char* 6 loc_file,int32_t 7
+  // thread_create_lachesis(retval,threadid, ,char* 6 loc_file,int32_t 7
   // loc_line)
   static auto *RuntimeType = FunctionType::get(
       Type::getVoidTy(context),
@@ -262,7 +262,7 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
       false);
 
   FunctionCallee Func =
-      Module->getOrInsertFunction("anaconda_thread_create", RuntimeType);
+      Module->getOrInsertFunction("lachesis_thread_create", RuntimeType);
 
   auto Builder = IRBuilder<>(&*II);
   Builder.CreateCall(Func, {&*I, Inst.getOperand(0), LocFile,
@@ -279,9 +279,9 @@ static void instrumentLocking(inst_iterator &I, LLVMContext &context,
   ++II;
 
   static auto BeforeFunction =
-      Module->getOrInsertFunction("anaconda_before_lock", FnType);
+      Module->getOrInsertFunction("lachesis_before_lock", FnType);
   static auto AfterFunction =
-      Module->getOrInsertFunction("anaconda_after_lock", FnType);
+      Module->getOrInsertFunction("lachesis_after_lock", FnType);
 
   auto BeforeBuilder = IRBuilder<>(&*I);
   auto AfterBuilder = IRBuilder<>(&*II);
@@ -303,9 +303,9 @@ static void instrumentUnlocking(inst_iterator &I, LLVMContext &context,
   ++II;
 
   static auto BeforeFunction =
-      Module->getOrInsertFunction("anaconda_before_unlock", FnType);
+      Module->getOrInsertFunction("lachesis_before_unlock", FnType);
   static auto AfterFunction =
-      Module->getOrInsertFunction("anaconda_after_unlock", FnType);
+      Module->getOrInsertFunction("lachesis_after_unlock", FnType);
 
   auto BeforeBuilder = IRBuilder<>(&*I);
   auto AfterBuilder = IRBuilder<>(&*II);
@@ -322,7 +322,7 @@ static void instrumentJoin(inst_iterator &I, LLVMContext &context,
   auto &Inst = cast<CallInst>(*I);
 
   static FunctionType *OriginalType = Inst.getFunctionType();
-  // thread_create_anaconda(retval,threadid, ,char* 6 loc_file,int32_t 7
+  // thread_create_lachesis(retval,threadid, ,char* 6 loc_file,int32_t 7
   // loc_line)
   static auto *FnType = FunctionType::get(
       Type::getVoidTy(context),
@@ -330,9 +330,9 @@ static void instrumentJoin(inst_iterator &I, LLVMContext &context,
       false);
 
   static auto BeforeFunction =
-      Module->getOrInsertFunction("anaconda_before_join", FnType);
+      Module->getOrInsertFunction("lachesis_before_join", FnType);
   static auto AfterFunction =
-      Module->getOrInsertFunction("anaconda_after_join", FnType);
+      Module->getOrInsertFunction("lachesis_after_join", FnType);
 
   auto BeforeBuilder = IRBuilder<>(&*I);
   auto AfterBuilder = IRBuilder<>(&*II);
@@ -365,9 +365,9 @@ static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
       FunctionType::get(Type::getVoidTy(context), {}, false);
 
   static auto BeforeFunction =
-      Module->getOrInsertFunction("anaconda_before_call", BeforeCallType);
+      Module->getOrInsertFunction("lachesis_before_call", BeforeCallType);
   static auto AfterFunction =
-      Module->getOrInsertFunction("anaconda_after_call", AfterCallType);
+      Module->getOrInsertFunction("lachesis_after_call", AfterCallType);
 
   auto Builder = IRBuilder<>(&*I);
   Builder.CreateCall(BeforeFunction,
@@ -497,7 +497,7 @@ static void findGlobalVariablesDebugInfo(Module &M,
   }
 }
 
-PreservedAnalyses AnacondaPass::run(Module &M, ModuleAnalysisManager &AM) {
+PreservedAnalyses LachesisPass::run(Module &M, ModuleAnalysisManager &AM) {
 
   const std::string FileName = M.getSourceFileName();
   auto *GV = createInsertGlobalString(M, FileName);

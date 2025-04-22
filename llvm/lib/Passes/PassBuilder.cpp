@@ -327,7 +327,7 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 #include <optional>
 
-#include "llvm/Transforms/Instrumentation/Anaconda.h"
+#include "llvm/Transforms/Instrumentation/Lachesis.h"
 
 using namespace llvm;
 

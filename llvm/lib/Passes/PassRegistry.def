@@ -153,7 +153,7 @@ MODULE_PASS("tsan-module", ModuleThreadSanitizerPass())
 MODULE_PASS("verify", VerifierPass())
 MODULE_PASS("view-callgraph", CallGraphViewerPass())
 MODULE_PASS("wholeprogramdevirt", WholeProgramDevirtPass())
-MODULE_PASS("anaconda",AnacondaPass())
+MODULE_PASS("lachesis",LachesisPass())
 #undef MODULE_PASS
 
 #ifndef MODULE_PASS_WITH_PARAMS

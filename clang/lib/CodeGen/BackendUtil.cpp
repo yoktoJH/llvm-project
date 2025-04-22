@@ -91,7 +91,7 @@
 #include <memory>
 #include <optional>
 
-#include "llvm/Transforms/Instrumentation/Anaconda.h"
+#include "llvm/Transforms/Instrumentation/Lachesis.h"
 
 using namespace clang;
 using namespace llvm;
@@ -103,8 +103,8 @@ using namespace llvm;
 namespace llvm {
 extern cl::opt<bool> PrintPipelinePasses;
 
-// Anaconda specific option
-static cl::opt<bool> Anacondaopt("anaconda", cl::init(false),cl::desc("enables instrumentation for anaconda"));
+// Lachesis specific option
+static cl::opt<bool> Lachesisopt("lachesis", cl::init(false),cl::desc("enables instrumentation for lachesis"));
 
 // Experiment to move sanitizers earlier.
 static cl::opt<bool> ClSanitizeOnOptimizerEarlyEP(
@@ -1153,8 +1153,8 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
       LangOpts.HIPStdParInterposeAlloc)
     MPM.addPass(HipStdParAllocationInterpositionPass());
 
-  if (Anacondaopt){
-    MPM.addPass(AnacondaPass());
+  if (Lachesisopt){
+    MPM.addPass(LachesisPass());
   }
 
   // Now that we have all of the passes ready, run them.
