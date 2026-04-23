@@ -178,7 +178,7 @@ static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
   // var_type, uint32_t 5 var_offset, char* 6 loc_file,int32_t 7 loc_line,
   // bool 8 is_local, ADDRINT 9 ins)
 
-  auto CreateCallLambda = [&](IRBuilder<> &Builder, auto &Fun) {
+  auto CreateCall = [&](IRBuilder<> &Builder, auto &Fun) {
     Builder.CreateCall(Fun,
                        {PointerOp, Builder.getInt32(Size), VarName, VarType,
                         Builder.getInt32(0), LocFile, Builder.getInt32(LineNum),
@@ -186,8 +186,8 @@ static void instrumentLoadStore(inst_iterator I, LLVMContext &context,
                         Builder.getInt64(0)});
   };
 
-  CreateCallLambda(BeforeBuilder, RuntimeBeforeFunc);
-  CreateCallLambda(AfterBuilder, RuntimeAfterFunc);
+  CreateCall(BeforeBuilder, RuntimeBeforeFunc);
+  CreateCall(AfterBuilder, RuntimeAfterFunc);
   /*before_builder.CreateCall(
       runtime_before_func,
       {address, before_builder.getInt32(size), var_name, var_type,
@@ -245,28 +245,42 @@ static void insertInitFunctions(Function &F) {
 void instrumentLocks(inst_iterator I, LLVMContext &context, Module *module,
                      GlobalVariable *loc_file) {}
 */
+static std::set<Instruction*> deadInst{};
 // gives runtime information about where was thread started
 static void insertThreadCreate(inst_iterator I, LLVMContext &context,
                                Module *Module, GlobalVariable *LocFile) {
 
-  inst_iterator II = I;
-  ++II;
-  auto &Inst = cast<CallInst>(*I);
-
-  static FunctionType *OriginalType = Inst.getFunctionType();
-  // thread_create_lachesis(retval,threadid, ,char* 6 loc_file,int32_t 7
+  // inst_iterator II = I;
+  //++II;
+  CallInst *Inst = cast<CallInst>(&*I);
+  // Inst.operand_values
+  FunctionType *OriginalType = Inst->getFunctionType();
+  // old void lachesis_thread_create(int retval, const pthread_t *thread, char
+  // *loc_file, int32_t loc_line)
+  // new int lachesis_thread_create(pthread_t * thread, const pthread_attr_t
+  // *attr, void *(*start_routine)(void *), void *arg, char *loc_file, int32_t
   // loc_line)
-  static auto *RuntimeType = FunctionType::get(
-      Type::getVoidTy(context),
-      {I->getType(), OriginalType->getFunctionParamType(0), PCHAR, INT32},
-      false);
+  /*int             pthread_create(pthread_t * thread, const pthread_attr_t *
+   * attr, typeof(void *(void *)) *start_routine, void *restrict arg);*/
+
+  static auto *RuntimeType =
+      FunctionType::get(OriginalType->getReturnType(),
+                        {OriginalType->getFunctionParamType(0),
+                         OriginalType->getFunctionParamType(1),
+                         OriginalType->getFunctionParamType(2),
+                         OriginalType->getFunctionParamType(3), PCHAR, INT32},
+                        false);
 
   FunctionCallee Func =
       Module->getOrInsertFunction("lachesis_thread_create", RuntimeType);
 
-  auto Builder = IRBuilder<>(&*II);
-  Builder.CreateCall(Func, {&*I, Inst.getOperand(0), LocFile,
-                            Builder.getInt32(getFileLine(Inst))});
+  auto Builder = IRBuilder<>(Inst);
+  CallInst *lachesisThreadCreate =
+      Builder.CreateCall(Func, {Inst->getOperand(0), Inst->getOperand(1),
+                                Inst->getOperand(2), Inst->getOperand(3),
+                                LocFile, Builder.getInt32(getFileLine(*Inst))});
+  Inst->replaceAllUsesWith(lachesisThreadCreate);
+  deadInst.insert(Inst);
 }
 
 static void instrumentLocking(inst_iterator &I, LLVMContext &context,
@@ -316,7 +330,6 @@ static void instrumentUnlocking(inst_iterator &I, LLVMContext &context,
 static void instrumentJoin(inst_iterator &I, LLVMContext &context,
                            Module *Module) {
 
-
   inst_iterator II = I;
   ++II;
   auto &Inst = cast<CallInst>(*I);
@@ -325,9 +338,7 @@ static void instrumentJoin(inst_iterator &I, LLVMContext &context,
   // thread_create_lachesis(retval,threadid, ,char* 6 loc_file,int32_t 7
   // loc_line)
   static auto *FnType = FunctionType::get(
-      Type::getVoidTy(context),
-      {OriginalType->getFunctionParamType(0)},
-      false);
+      Type::getVoidTy(context), {OriginalType->getFunctionParamType(0)}, false);
 
   static auto BeforeFunction =
       Module->getOrInsertFunction("lachesis_before_join", FnType);
@@ -344,7 +355,8 @@ static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
                                    Module *Module, GlobalVariable *LocFile) {
 
   // this is written like this, because I expect this to be changed to a pass
-  // parameter these should be configurable in  future
+  // parameter
+  //  these should be configurable in  future
   static const char ThreadCreateFuncName[] = "pthread_create";
   static const char LockMutexFuncName[] = "pthread_mutex_lock";
   static const char RdLockRWLockFuncName[] = "pthread_rwlock_rdlock";
@@ -505,6 +517,9 @@ PreservedAnalyses LachesisPass::run(Module &M, ModuleAnalysisManager &AM) {
   findGlobalVariablesDebugInfo(M, GlobalVariables);
   for (Function &F : M.functions()) {
     instrumentFunction(F, GV, GlobalVariables);
+  }
+  for (Instruction *I: deadInst){
+    I->eraseFromParent();
   }
   return PreservedAnalyses::none();
 }
