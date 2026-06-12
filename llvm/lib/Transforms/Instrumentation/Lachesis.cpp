@@ -413,6 +413,9 @@ static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
              0) {
     instrumentJoin(I, context, Module);
     ++I;
+  } else if (Inst.getCalledFunction()->getName().contains("__VERIFIER")){
+    CallInst *Inst = cast<CallInst>(&*I);
+    deadInst.insert(Inst);
   }
 }
 
