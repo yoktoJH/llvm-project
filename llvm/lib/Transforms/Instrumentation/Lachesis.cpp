@@ -245,7 +245,7 @@ static void insertInitFunctions(Function &F) {
 void instrumentLocks(inst_iterator I, LLVMContext &context, Module *module,
                      GlobalVariable *loc_file) {}
 */
-static std::set<Instruction*> deadInst{};
+static std::set<Instruction *> deadInst{};
 // gives runtime information about where was thread started
 static void insertThreadCreate(inst_iterator I, LLVMContext &context,
                                Module *Module, GlobalVariable *LocFile) {
@@ -280,6 +280,22 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
                                 Inst->getOperand(2), Inst->getOperand(3),
                                 LocFile, Builder.getInt32(getFileLine(*Inst))});
   Inst->replaceAllUsesWith(lachesisThreadCreate);
+  deadInst.insert(Inst);
+}
+
+static void insertVerifierAssert(inst_iterator I, LLVMContext &context,
+                                 Module *Module) {
+
+  CallInst *Inst = cast<CallInst>(&*I);
+  FunctionType *OriginalType = Inst->getFunctionType();
+
+  FunctionCallee Func =
+      Module->getOrInsertFunction("lachesis_thread_create", OriginalType);
+
+  auto Builder = IRBuilder<>(Inst);
+  CallInst *lachesisVerifierAssert =
+      Builder.CreateCall(Func, {Inst->getOperand(0)});
+  Inst->replaceAllUsesWith(lachesisVerifierAssert);
   deadInst.insert(Inst);
 }
 
@@ -413,9 +429,10 @@ static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
              0) {
     instrumentJoin(I, context, Module);
     ++I;
-  } else if (Inst.getCalledFunction()->getName().contains("__VERIFIER")){
-    CallInst *Inst = cast<CallInst>(&*I);
-    deadInst.insert(Inst);
+  } else if (Inst.getCalledFunction()->getName().contains(
+                 "__VERIFIER_assert")) {
+    insertVerifierAssert(I, context, Module);
+    ++I;
   }
 }
 
@@ -521,7 +538,7 @@ PreservedAnalyses LachesisPass::run(Module &M, ModuleAnalysisManager &AM) {
   for (Function &F : M.functions()) {
     instrumentFunction(F, GV, GlobalVariables);
   }
-  for (Instruction *I: deadInst){
+  for (Instruction *I : deadInst) {
     I->eraseFromParent();
   }
   return PreservedAnalyses::none();
