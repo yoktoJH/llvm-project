@@ -290,7 +290,7 @@ static void insertVerifierAssert(inst_iterator I, LLVMContext &context,
   FunctionType *OriginalType = Inst->getFunctionType();
 
   FunctionCallee Func =
-      Module->getOrInsertFunction("lachesis_thread_create", OriginalType);
+      Module->getOrInsertFunction("__VERIFIER_assert_lachesis", OriginalType);
 
   auto Builder = IRBuilder<>(Inst);
   CallInst *lachesisVerifierAssert =
