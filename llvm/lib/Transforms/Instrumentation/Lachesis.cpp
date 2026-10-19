@@ -283,6 +283,22 @@ static void insertThreadCreate(inst_iterator I, LLVMContext &context,
   deadInst.insert(Inst);
 }
 
+static void insertVerifierImpl(inst_iterator I, LLVMContext &context,
+                                 Module *Module,StringRef verifierFuncName) {
+  
+  CallInst *Inst = cast<CallInst>(&*I);
+  FunctionType *OriginalType = Inst->getFunctionType();
+
+  FunctionCallee Func =
+      Module->getOrInsertFunction(verifierFuncName, OriginalType);
+
+  auto Builder = IRBuilder<>(Inst);
+  CallInst *lachesisVerifierImpl =
+      Builder.CreateCall(Func, {});
+  Inst->replaceAllUsesWith(lachesisVerifierImpl);
+  deadInst.insert(Inst);
+}
+
 static void insertVerifierAssert(inst_iterator I, LLVMContext &context,
                                  Module *Module) {
 
@@ -298,6 +314,8 @@ static void insertVerifierAssert(inst_iterator I, LLVMContext &context,
   Inst->replaceAllUsesWith(lachesisVerifierAssert);
   deadInst.insert(Inst);
 }
+
+
 
 static void instrumentLocking(inst_iterator &I, LLVMContext &context,
                               Module *Module, bool isWriteLock) {
@@ -432,6 +450,14 @@ static void instrumentFunctionCall(inst_iterator &I, LLVMContext &context,
   } else if (Inst.getCalledFunction()->getName().contains(
                  "__VERIFIER_assert")) {
     insertVerifierAssert(I, context, Module);
+    ++I;
+  } else if (Inst.getCalledFunction()->getName().contains("__VERIFIER_atomic_acquire")){
+    errs() << "atomic acquire is replaced\n ";
+    insertVerifierImpl(I, context, Module,"__VERIFIER_atomic_acquire_lachesis");
+    ++I;
+  } else if (Inst.getCalledFunction()->getName().contains("__VERIFIER_atomic_release")){
+    errs() << "atomic acquire is replaced\n ";
+    insertVerifierImpl(I, context, Module,"__VERIFIER_atomic_release_lachesis");
     ++I;
   }
 }
